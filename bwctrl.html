@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>病人資料管理系統</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        label { display: inline-block; width: 120px; vertical-align: top; }
+        input { margin-bottom: 10px; }
+        button { margin-top: 10px; margin-right: 10px; }
+        #result { margin-top: 20px; font-weight: bold; white-space: pre-wrap; }
+        #historyList, #measurementList { margin-top: 10px; list-style: disc inside; }
+        #measurementEditInfo { margin: 10px 0; font-size: 1.1em; color: #555; }
+        #measurementPrompt {
+            display: inline-block;
+            vertical-align: top;
+            margin-left: 20px;
+            color: #007BFF;
+            font-weight: bold;
+        }
+        /* 只針對 readOnly 的輸入欄位做灰階 */
+        input[readonly] {
+            background-color: #e9ecef;
+        }
+    </style>
+</head>
+<body>
+    <h1>病人資料管理系統</h1>
+
+    <section>
+        <h2>新增/更新病人 / 編輯測量</h2>
+        <div id="measurementEditInfo"></div>
+        <label for="patientIdInput">病歷號 (必填)：</label>
+        <input type="text" id="patientIdInput" placeholder="輸入病歷號"><br>
+        <label for="patientNameInput">姓名：</label>
+        <input type="text" id="patientNameInput" placeholder="輸入姓名"><br>
+        <label for="dobInput">出生日期：</label>
+        <input type="date" id="dobInput"><br>
+        <label for="heightInput">身高 (cm)：</label>
+        <input type="number" id="heightInput" placeholder="輸入身高"><br>
+        <label for="weightInput">體重 (kg)：</label>
+        <input type="number" id="weightInput" placeholder="輸入體重"><br>
+        <label for="bodyFatInput">體脂率 (%)：</label>
+        <input type="number" id="bodyFatInput" placeholder="輸入體脂率"><br>
+        <label for="visceralFatInput">內臟脂肪：</label>
+        <input type="number" id="visceralFatInput" placeholder="輸入內臟脂肪"><br>
+        <button id="addBtn">新增</button>
+    </section>
+
+    <section>
+        <h2>查詢/編輯病人 / 刪除病人 / 新增病人</h2>
+        <input type="text" id="searchInput" placeholder="輸入病歷號或姓名">
+        <input type="date" id="searchDobInput" placeholder="或輸入出生日期">
+        <button id="searchBtn">查詢</button>
+        <button id="deleteBtn">刪除病人</button>
+        <button id="newPatientBtn">新增病人</button>
+        <div id="result"></div>
+    </section>
+
+    <section>
+        <h2>編輯歷史 (最近5次編輯)</h2>
+        <ul id="historyList"></ul>
+    </section>
+
+    <section>
+        <h2>測量歷史 (每日最後一次)</h2>
+        <label for="measurementDateInput">選擇日期：</label>
+        <input type="date" id="measurementDateInput">
+        <button id="loadMeasurementBtn">載入該日測量</button>
+        <ul id="measurementList"></ul>
+        <div id="measurementPrompt"></div>
+    </section>
+
+    <script>
+        let isEditing = false;
+        let isEditingMeasurement = false;
+        let measurementEditingDate = null;
+        let measurementEditingTime = null;
+        let currentPatientId = null;
+
+        function getPatients() {
+            const data = localStorage.getItem('patients');
+            return data ? JSON.parse(data) : [];
+        }
+        function savePatients(patients) {
+            localStorage.setItem('patients', JSON.stringify(patients));
+        }
+        function calculateAge(dob) {
+            if (!dob) return '';
+            const birth = new Date(dob);
+            const now = new Date();
+            let years = now.getFullYear() - birth.getFullYear();
+            let months = now.getMonth() - birth.getMonth();
+            if (now.getDate() < birth.getDate()) months--;
+            if (months < 0) { years--; months += 12; }
+            return `${years}歲${months}月`;
+        }
+        function getHistory() {
+            const data = localStorage.getItem('editHistory');
+            return data ? JSON.parse(data) : [];
+        }
+        function saveHistory(history) {
+            localStorage.setItem('editHistory', JSON.stringify(history));
+        }
+        function renderHistory() {
+            const history = getHistory();
+            const list = document.getElementById('historyList');
+            list.innerHTML = '';
+            history.slice().reverse().forEach(entry => {
+                const li = document.createElement('li');
+                li.textContent = `${entry.date} 最後編輯時間：${entry.time}`;
+                list.appendChild(li);
+            });
+        }
+        function logEdit() {
+            const now = new Date();
+            const dateStr = now.toISOString().split('T')[0];
+            const timeStr = now.toTimeString().split(' ')[0];
+            const history = getHistory();
+            const last = history[history.length - 1];
+            if (last && last.date === dateStr) last.time = timeStr;
+            else {
+                history.push({ date: dateStr, time: timeStr });
+                if (history.length > 5) history.shift();
+            }
+            saveHistory(history);
+            renderHistory();
+        }
+        function getMeasurementHistory(id) {
+            const data = localStorage.getItem(`measureHistory_${id}`);
+            return data ? JSON.parse(data) : [];
+        }
+        function saveMeasurementHistory(id, history) {
+            localStorage.setItem(`measureHistory_${id}`, JSON.stringify(history));
+        }
+        function renderMeasurementHistory(id) {
+            const hist = getMeasurementHistory(id);
+            const map = {};
+            hist.forEach(e => {
+                if (!map[e.date] || e.time > map[e.date].time) map[e.date] = e;
+            });
+            const entries = Object.values(map).sort((a, b) => b.date.localeCompare(a.date));
+            const list = document.getElementById('measurementList');
+            list.innerHTML = '';
+            entries.forEach(e => {
+                const parts = [];
+                if (e.height !== null) parts.push(`身高：${e.height} cm`);
+                if (e.weight !== null) parts.push(`體重：${e.weight} kg`);
+                if (e.bodyFat !== null) parts.push(`體脂率：${e.bodyFat}%`);
+                if (e.visceralFat !== null) parts.push(`內臟脂肪：${e.visceralFat}`);
+                if (e.bmi !== null) parts.push(`BMI：${e.bmi}`);
+                const li = document.createElement('li');
+                li.textContent = `${e.date}：${parts.join('，')}`;
+                const btn = document.createElement('button');
+                btn.textContent = '編輯測量';
+                btn.style.marginLeft = '10px';
+                btn.addEventListener('click', () => loadMeasurementByDate(e.date));
+                li.appendChild(btn);
+                list.appendChild(li);
+            });
+        }
+        function updateAddBtnLabel() {
+            const btn = document.getElementById('addBtn');
+            btn.textContent = isEditingMeasurement ? '更新測量' : (isEditing ? '更新' : '新增');
+        }
+        function renderPatientInfo() {
+            const p = getPatients().find(p => p.id === currentPatientId);
+            if (p) {
+                document.getElementById('patientIdInput').value = p.id;
+                document.getElementById('patientNameInput').value = p.name || '';
+                document.getElementById('dobInput').value = p.dob || '';
+            }
+        }
+        function collectFormWithId() {
+            const rec = collectFormData();
+            rec.id = document.getElementById('patientIdInput').value.trim();
+            rec.dob = document.getElementById('dobInput').value || null;
+            return rec;
+        }
+        function collectFormData() {
+            const name = document.getElementById('patientNameInput').value.trim();
+            const h = parseFloat(document.getElementById('heightInput').value);
+            const w = parseFloat(document.getElementById('weightInput').value);
+            const bf = parseFloat(document.getElementById('bodyFatInput').value);
+            const vf = parseFloat(document.getElementById('visceralFatInput').value);
+            let bmi = null;
+            if (!isNaN(h) && !isNaN(w) && h > 0) bmi = (w / ((h / 100) ** 2)).toFixed(1);
+            return {
+                name: name || '',
+                dob: document.getElementById('dobInput').value || null,
+                height: !isNaN(h) ? h : null,
+                weight: !isNaN(w) ? w : null,
+                bodyFat: !isNaN(bf) ? bf : null,
+                visceralFat: !isNaN(vf) ? vf : null,
+                bmi: bmi
+            };
+        }
+        function loadMeasurementByDate(date) {
+            const targetDate = date || document.getElementById('measurementDateInput').value;
+            if (!currentPatientId) { alert('請先查詢病人'); return; }
+            if (!targetDate) { alert('請選擇日期'); return; }
+            const hist = getMeasurementHistory(currentPatientId);
+            let entries = hist.filter(e => e.date === targetDate);
+            let rec;
+            if (entries.length > 0) {
+                entries.sort((a, b) => b.time.localeCompare(a.time));
+                rec = { ...entries[0] };
+            } else {
+                rec = { date: targetDate, time: null, height: null, weight: null, bodyFat: null, visceralFat: null, bmi: null };
+            }
+            ['height','weight','bodyFat','visceralFat'].forEach(f => {
+                if (rec[f] == null) {
+                    let nearest = null, minDiff = Infinity;
+                    hist.forEach(e => {
+                        if (e[f] != null) {
+                            const diff = Math.abs(new Date(e.date) - new Date(targetDate));
+                            if (diff < minDiff) { minDiff = diff; nearest = e[f]; }
+                        }
+                    });
+                    if (nearest != null) rec[f] = nearest;
+                }
+            });
+            if (rec.height != null && rec.weight != null) rec.bmi = (rec.weight / ((rec.height / 100) ** 2)).toFixed(1);
+
+            // 進入測量編輯：鎖定病歷號、設定狀態
+            isEditingMeasurement = true;
+            measurementEditingDate = targetDate;
+            measurementEditingTime = rec.time;
+            document.getElementById('patientIdInput').readOnly = true;
+            document.getElementById('measurementEditInfo').textContent =
+                `正在編輯 ${targetDate} 的測量數據` + (rec.time ? ` (${rec.time})` : ' (新增)');
+
+            renderPatientInfo();
+            document.getElementById('heightInput').value = rec.height || '';
+            document.getElementById('weightInput').value = rec.weight || '';
+            document.getElementById('bodyFatInput').value = rec.bodyFat || '';
+            document.getElementById('visceralFatInput').value = rec.visceralFat || '';
+            updateAddBtnLabel();
+
+            // 顯示提示
+            document.getElementById('measurementPrompt').textContent =
+                '請在上方「新增/更新病人／編輯測量」區塊編輯數據';
+        }
+        function updateMeasurement() {
+            const hist = getMeasurementHistory(currentPatientId);
+            if (isEditingMeasurement && measurementEditingTime) {
+                const idx = hist.findIndex(e => e.date === measurementEditingDate && e.time === measurementEditingTime);
+                if (idx >= 0) {
+                    hist[idx] = { date: measurementEditingDate, time: measurementEditingTime, ...collectFormData() };
+                    saveMeasurementHistory(currentPatientId, hist);
+                    alert('測量紀錄已更新');
+                }
+            } else {
+                const now = new Date();
+                const timeStr = now.toTimeString().split(' ')[0];
+                hist.push({ date: measurementEditingDate, time: timeStr, ...collectFormData() });
+                saveMeasurementHistory(currentPatientId, hist);
+                alert('測量紀錄已新增');
+            }
+            renderMeasurementHistory(currentPatientId);
+        }
+        function onAddOrUpdate() {
+            if (isEditingMeasurement)      { updateMeasurement(); logEdit(); }
+            else if (isEditing)           { updatePatient(); logEdit(); logMeasurement(collectFormWithId()); }
+            else                          { addPatient();    logEdit(); logMeasurement(collectFormWithId()); }
+        }
+        function searchPatient() {
+            const term = document.getElementById('searchInput').value.trim().toLowerCase();
+            const dob = document.getElementById('searchDobInput').value;
+            if (!term && !dob) return;
+            const patients = getPatients();
+            // 篩選所有符合條件的病人
+            const matches = patients.filter(p =>
+                (term && (p.id.toLowerCase() === term || p.name.toLowerCase() === term)) ||
+                (dob && p.dob === dob)
+            );
+            const resultDiv = document.getElementById('result');
+            if (matches.length === 0) {
+                resultDiv.textContent = '查無此病人';
+                document.getElementById('measurementList').innerHTML = '';
+                return;
+            }
+            let selected;
+            if (matches.length > 1) {
+                // 列出所有重複病人並請用戶選擇
+                let msg = '找到多筆符合條件的病人：\n';
+                matches.forEach((p, i) => {
+                    msg += `${i+1}. 病歷號：${p.id}，姓名：${p.name}，生日：${p.dob}\n`;
+                });
+                msg += '請輸入要開啟的病人序號：';
+                const choice = prompt(msg);
+                const idx = parseInt(choice, 10);
+                if (isNaN(idx) || idx < 1 || idx > matches.length) {
+                    alert('無效的序號，請重新查詢');
+                    return;
+                }
+                selected = matches[idx - 1];
+            } else {
+                selected = matches[0];
+            }
+            // 跳轉到單一病人顯示流程
+            resultDiv.textContent = `病歷號：${selected.id}\n姓名：${selected.name}` +
+                (selected.dob ? `\n年齡：${calculateAge(selected.dob)}` : '');
+            resetForm();
+            currentPatientId = selected.id;
+            renderPatientInfo();
+            isEditing = true;
+            updateAddBtnLabel();
+            renderMeasurementHistory(selected.id);
+            loadMeasurementByDate(new Date().toISOString().split('T')[0]);
+        }
+        function updatePatient() {
+            const pts = getPatients();
+            const idx = pts.findIndex(p => p.id === currentPatientId);
+            if (idx < 0) { alert('尚未選擇要編輯的病人'); return; }
+            pts[idx] = collectFormWithId();
+            savePatients(pts);
+            alert('更新成功');
+        }
+        function addPatient() {
+            const id = document.getElementById('patientIdInput').value.trim();
+            if (!id) { alert('病歷號為必填項目'); return; }
+            const pts = getPatients();
+            if (pts.some(p => p.id === id)) { alert('此病歷號已存在'); return; }
+            pts.push(collectFormWithId());
+            savePatients(pts);
+            alert('新增成功');
+            resetForm();
+        }
+        function logMeasurement(rec) {
+            const hist = getMeasurementHistory(rec.id);
+            const now = new Date();
+            hist.push({ date: now.toISOString().split('T')[0], time: now.toTimeString().split(' ')[0], ...rec });
+            saveMeasurementHistory(rec.id, hist);
+        }
+        function deletePatient() {
+            const term = document.getElementById('searchInput').value.trim().toLowerCase();
+            if (!term) { alert('請先輸入病歷號或姓名'); return; }
+            const pts = getPatients();
+            const idx = pts.findIndex(p => p.id.toLowerCase() === term || p.name.toLowerCase() === term);
+            if (idx < 0) { alert('查無此病人'); return; }
+            if (confirm(`確定要刪除病歷號：${pts[idx].id}，姓名：${pts[idx].name} 嗎？`)) {
+                pts.splice(idx, 1);
+                savePatients(pts);
+                alert('已刪除病人資料');
+                resetForm();
+                document.getElementById('result').textContent = '';
+                document.getElementById('measurementList').innerHTML = '';
+                logEdit();
+            }
+        }
+        function resetForm() {
+            isEditing = false;
+            isEditingMeasurement = false;
+            measurementEditingDate = null;
+            measurementEditingTime = null;
+            currentPatientId = null;
+            document.getElementById('measurementEditInfo').textContent = '';
+            ['patientIdInput','patientNameInput','dobInput','heightInput','weightInput','bodyFatInput','visceralFatInput','measurementDateInput']
+                .forEach(id => {
+                    const el = document.getElementById(id);
+                    el.readOnly = false;
+                    el.value = '';
+                });
+            updateAddBtnLabel();
+            document.getElementById('measurementPrompt').textContent = '';
+        }
+
+        document.getElementById('addBtn').addEventListener('click', onAddOrUpdate);
+        document.getElementById('searchBtn').addEventListener('click', searchPatient);
+        document.getElementById('deleteBtn').addEventListener('click', deletePatient);
+        document.getElementById('newPatientBtn').addEventListener('click', resetForm);
+        document.getElementById('loadMeasurementBtn').addEventListener('click', () => loadMeasurementByDate());
+        renderHistory();
+    </script>
+</body>
+</html>
